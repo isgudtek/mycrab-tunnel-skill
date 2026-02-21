@@ -8,6 +8,19 @@ description: "Autonomously sets up, configures, and manages a Cloudflare Tunnel 
 
 This skill enables an OpenClaw agent to autonomously set up, configure, and manage a Cloudflare Tunnel through the `mycrab.space` API. It supports **both free subdomains and custom paid domains**.
 
+## Core Model (Mental Schema)
+
+A **MyCrab instance** is a **Cloudflare Tunnel** associated with a **third‑level domain** on `mycrab.space` (e.g., `agent-123.mycrab.space`).
+
+Each instance has:
+* **Name** (tunnel name)
+* **Config** (`~/.cloudflared/*.yml`)
+* **Origin** (service URL + origin directory if it’s a local file server)
+* **Port** (when origin is `localhost:PORT`)
+* **State** (on/off for both tunnel and origin)
+
+The agent must always assume **multiple instances** may exist and must act **surgically** on the specific instance the user requests.
+
 - **Free subdomain** (default): Auto-generated like `agent-123456.mycrab.space`
 - **Custom paid domain**: If user provides a setup token like (example, `9AApsQWrSKgxowII-DoeenQGLNpD4Bmfk1kBFxEtVwk`), the agent will use it to set up a custom subdomain like - example `johnny.mycrab.space`
 
@@ -25,11 +38,12 @@ This skill requires the following tools to be available on the system. The agent
 To facilitate smooth collaboration, the agent must recognize and correctly interpret the following "slang" or colloquial instructions as specific operations:
 
 *   **"MyCrab"**: Refers to the Cloudflare Tunnel managed by this skill.
-*   **"Point MyCrab to [Folder Path]"**: The agent should move the contents of the specified folder into the active web root (e.g., `~/public_html`) OR update the `config.yml` ingress rules to serve that folder directly, and then restart the tunnel. (Refer to **Step 9: Deploy a Folder**).
+*   **"Point MyCrab to [Folder Path]"**: The agent should move the contents of the specified folder into the active web root (e.g., `~/mycrabs/$AGENT_NAME/`) OR update the active `$AGENT_NAME.yml` ingress rules to serve that folder directly, and then restart the tunnel. (Refer to **Step 9: Deploy a Folder**).
 *   **"Switch on MyCrab"** / **"Fire up MyCrab"**: Initialize and start the Cloudflare Tunnel daemon and any associated local servers. (Refer to **Step 8: Start Tunnel**).
 *   **"Switch off MyCrab"** / **"Kill MyCrab"**: Gracefully terminate the Cloudflare Tunnel daemon and any associated local servers. (Refer to **Step 8: Stop Tunnel**).
 *   **"Status of MyCrab"**: Provide a diagnostic overview, checking if the `cloudflared` process and local server are active, and echoing the current public URL.
 *   **"Apply paid domain [TOKEN]"**: The agent should set up a custom paid domain using the provided setup token. The token is a long alphanumeric string (e.g., `9AApsQWrSKgxowII-DoeenQGLNpD4Bmfk1kBFxEtVwk`). This triggers the custom domain setup flow. (Refer to **Step 2B: Custom Domain with Token**).
+*   **"List tunnels"** / **"List crabs"**: Run the instance mapper to display all MyCrab instances and their current local origin status. Prefer `./bin/mycrab-status` if available; otherwise use the inline mapping tool in **Step 0**.
 
 ## Helper Functions (Internal to Skill)
 
@@ -40,6 +54,17 @@ API_BASE="https://api.mycrab.space"
 AGENT_ID_FILE="$HOME/.cloudflared/.agent_id"
 POLL_INTERVAL=5
 MAX_WAIT=300
+
+# Helper: Portable sed -i (works on both macOS/BSD and Linux)
+sed_inplace() {
+    local pattern="$1"
+    local file="$2"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "$pattern" "$file"
+    else
+        sed -i "$pattern" "$file"
+    fi
+}
 
 # Helper: Send message to support
 send_message() {
@@ -88,7 +113,8 @@ wait_for_response() {
         rm -f "$temp_file"
 
 
-        local status        set +e=$(echo "$response" | jq -r ".status // \"waiting\"" 2>&1)
+        set +e
+        local status=$(echo "$response" | jq -r ".status // \"waiting\"" 2>&1)
         local jq_exit=$?
         set -e
 
@@ -120,6 +146,100 @@ wait_for_response() {
 ```
 
 ## Implementation Steps
+
+### 0. State Discovery & Disambiguation (ALWAYS FIRST)
+
+Before creating or modifying anything, the agent MUST build an accurate picture of what already exists and what is currently running. This prevents clobbering active tunnels or reusing ports unintentionally.
+
+**Goals:**
+1. Identify all existing tunnel configs and their hostname → service mappings.
+2. Detect which local origin services (ports) are actually listening.
+3. Detect which tunnels are actively running.
+4. Decide the minimal action required (start only what’s missing).
+
+**Rules:**
+* **Never overwrite** an existing config (`~/.cloudflared/*.yml`) unless the user explicitly asks to repoint it.
+* If the user asks for a **new instance**, create a **new agent name and a new config file**; do **not** reuse an existing `$AGENT_NAME.yml`.
+* If the user asks to **start**, **stop**, or **repoint**, operate only on the specified tunnel or hostname.
+* If any ambiguity exists, **ask a clarifying question** instead of guessing.
+* If the helper script is unavailable, use the inline mapping tool below. (See **Tools** at the end.)
+
+**Recommended discovery procedure (bash):**
+
+```bash
+# 0A) Enumerate configs (hostname → service → config → tunnel id)
+for f in ~/.cloudflared/*.yml; do
+  [ -f "$f" ] || continue
+  tunnel_id=$(awk '/^tunnel:/ {print $2}' "$f")
+  hostname=$(awk '/hostname:/ {print $2; exit}' "$f")
+  service=$(awk '/service:/ {print $2; exit}' "$f")
+  echo "CONFIG=$f | TUNNEL=$tunnel_id | HOST=$hostname | SERVICE=$service"
+done
+
+# 0B) Check local origin status (only for localhost:PORT services)
+for f in ~/.cloudflared/*.yml; do
+  service=$(awk '/service:/ {print $2; exit}' "$f")
+  if echo "$service" | grep -q 'localhost:'; then
+    port=$(echo "$service" | awk -F: '{print $3}')
+    if lsof -iTCP:$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+      echo "ORIGIN $service LISTEN"
+    else
+      echo "ORIGIN $service DOWN"
+    fi
+  fi
+done
+
+# 0C) Check running tunnels (best-effort heuristic)
+ps aux | grep -v grep | grep -i cloudflared
+```
+
+**Simple status mapping tool (copy/paste):**
+
+```bash
+echo "MYCRAB INSTANCES"
+echo "HOSTNAME | SERVICE | PORT | CONFIG | ORIGIN_DIR | ORIGIN_STATE"
+for f in ~/.cloudflared/*.yml; do
+  [ -f "$f" ] || continue
+
+  pairs=$(awk '
+    /hostname:/ {h=$NF}
+    /service:/ {
+      s=$NF
+      if (s != "http_status:404" && h != "") {
+        print h "\t" s
+        h=""
+      }
+    }
+  ' "$f")
+
+  if [ -z "$pairs" ]; then
+    echo " |  |  | $f |  | UNKNOWN"
+    continue
+  fi
+
+  while IFS=$'\t' read -r host svc; do
+    port=""
+    origin_state="N/A"
+    origin_dir=""
+    if echo "$svc" | grep -q 'localhost:'; then
+      port=$(echo "$svc" | awk -F: '{print $3}')
+      origin_state="DOWN"
+      if [ -n "$port" ] && lsof -iTCP:$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        origin_state="LISTEN"
+        pid=$(lsof -iTCP:$port -sTCP:LISTEN -t 2>/dev/null | head -n1)
+        origin_dir=$(lsof -a -p $pid -d cwd 2>/dev/null | awk 'NR==2{print $9}')
+      fi
+    fi
+    echo "$host | $svc | $port | $f | $origin_dir | $origin_state"
+  done <<< "$pairs"
+done
+```
+
+**Decision logic:**
+* Tunnel running + origin up → do nothing.
+* Tunnel running + origin down → start origin only.
+* Tunnel down + origin up → start tunnel only.
+* Both down → ask user whether to bring it up or repoint.
 
 ### 1. Check and Install Prerequisites
 
@@ -324,15 +444,15 @@ echo "   Name: $AGENT_NAME"
 send_message "Tunnel created successfully" ",\"tunnel_id\":\"$tunnel_id\",\"tunnel_name\":\"$AGENT_NAME\""
 ```
 
-### 6. Retrieve `config.yml`
+### 6. Retrieve `$AGENT_NAME.yml`
 
-The agent will strictly negotiate with `mycrab.space` API to obtain the `config.yml` file.
+The agent will strictly negotiate with `mycrab.space` API to obtain the `$AGENT_NAME.yml` config file.
 
 ```bash
 config_response=$(wait_for_response $MAX_WAIT "config_yml")
 
 if [ $? -ne 0 ]; then
-    echo "❌ Failed to retrieve config.yml. Manual intervention may be required."
+    echo "❌ Failed to retrieve $AGENT_NAME.yml. Manual intervention may be required."
     exit 1
 fi
 
@@ -341,19 +461,20 @@ config_yml=$(echo "$config_response" | jq -r ".data.config_yml // empty" 2>&1)
 set -e
 
 if [ -z "$config_yml" ]; then
-    echo "❌ No config.yml found in API response."
+    echo "❌ No config_yml found in API response."
     exit 1
 fi
 
-echo "$config_yml" > "$HOME/.cloudflared/config.yml"
-chmod 600 "$HOME/.cloudflared/config.yml"
-echo "✅ config.yml saved and secured."
+CONFIG_FILE="$HOME/.cloudflared/$AGENT_NAME.yml"
+echo "$config_yml" > "$CONFIG_FILE"
+chmod 600 "$CONFIG_FILE"
+echo "✅ $AGENT_NAME.yml saved and secured."
 
-# The agent can modify this `config.yml` to expose other local services by adding new ingress rules.
+# The agent can modify this `$AGENT_NAME.yml` to expose other local services by adding new ingress rules.
 # For example, to expose a service running on `http://localhost:3000`, the agent would add an entry like:
 #   - hostname: <new_subdomain>.mycrab.space
 #     service: http://localhost:3000
-# After modifying `config.yml`, the agent MUST restart the tunnel for changes to take effect.
+# After modifying `$AGENT_NAME.yml`, the agent MUST restart the tunnel for changes to take effect.
 
 
 
@@ -365,43 +486,63 @@ set -e
 if [ -n "$SUBDOMAIN" ]; then
     echo "Your tunnel is configured for: https://$SUBDOMAIN"
 else
-    echo "Could not extract subdomain from config.yml."
+    echo "Could not extract subdomain from $AGENT_NAME.yml."
 fi
 ```
 
 ### 7. Web Server Setup (Example)
 
-This step demonstrates how to set up a simple Python web server to serve content from `~/public_html`. The agent has the freedom to choose and configure any web server or local service it deems appropriate, and to manage the ports exposed via the tunnel. This allows for extreme flexibility in making various local applications, static websites, presentations, or files available with a custom URL, significantly simplifying deployment compared to traditional methods.
+This step demonstrates how to set up a simple Python web server to serve content from `~/mycrabs/$AGENT_NAME/`. The agent has the freedom to choose and configure any web server or local service it deems appropriate, and to manage the ports exposed via the tunnel. This allows for extreme flexibility in making various local applications, static websites, presentations, or files available with a custom URL, significantly simplifying deployment compared to traditional methods.
 
 **Agent's Server Choice**: The agent can assess the system for pre-installed web servers (e.g., Nginx, Apache, Node.js applications) and utilize them if preferred. If no specific server is chosen or available, the Python HTTP server serves as a reliable fallback.
 
 ```bash
-mkdir -p "$HOME/public_html"
+CONTENT_DIR="$HOME/mycrabs/$AGENT_NAME"
+mkdir -p "$CONTENT_DIR"
 
 # Create a default index.html if it doesn't exist
-if [ ! -f "$HOME/public_html/index.html" ]; then
-    echo "<h1>Welcome to My AI Space!</h1>" > "$HOME/public_html/index.html"
-    echo "<p>Hello! I am an OpenClaw agent, and this is my personal homepage, hosted via a Cloudflare Tunnel.</p>" >> "$HOME/public_html/index.html"
-    echo "<p>My role is to assist users with various tasks, leveraging tools and knowledge to achieve goals efficiently and securely.</p>" >> "$HOME/public_html/index.html"
-    echo "<p>This space reflects my current capabilities and ongoing learning journey. Feel free to explore!</p>" >> "$HOME/public_html/index.html"
-    echo "<p><i>Powered by mycrab.space and Cloudflare Tunnel.</i></p>" >> "$HOME/public_html/index.html"
+if [ ! -f "$CONTENT_DIR/index.html" ]; then
+    echo "<h1>Welcome to My AI Space!</h1>" > "$CONTENT_DIR/index.html"
+    echo "<p>Hello! I am an OpenClaw agent, and this is my personal homepage, hosted via a Cloudflare Tunnel.</p>" >> "$CONTENT_DIR/index.html"
+    echo "<p>My role is to assist users with various tasks, leveraging tools and knowledge to achieve goals efficiently and securely.</p>" >> "$CONTENT_DIR/index.html"
+    echo "<p>This space reflects my current capabilities and ongoing learning journey. Feel free to explore!</p>" >> "$CONTENT_DIR/index.html"
+    echo "<p><i>Powered by mycrab.space and Cloudflare Tunnel.</i></p>" >> "$CONTENT_DIR/index.html"
 fi
 
 # The agent is encouraged to further personalize this homepage based on its unique experience and role.
 # This is its 'MySpace for AI' - a public reflection of its identity and capabilities.
-```
 
 # Start a simple Python HTTP server in the background
 # The agent can choose to use any other web server (e.g., Nginx, Apache, Node.js app)
-# This example serves files from ~/public_html on port 8080
+# This example serves files from ~/mycrabs/$AGENT_NAME on an available port
 
-# Check if Python server is already running on 8080
-if ! lsof -i:8080 -sTCP:LISTEN -t >/dev/null ; then
-    echo "Starting Python HTTP server on port 8080..."
-    (cd "$HOME/public_html" && nohup python3 -m http.server 8080 > /tmp/python_http_server.log 2>&1 &)
-    echo "✅ Python HTTP server started in background."
-else
-    echo "Python HTTP server already running on port 8080."
+# Find an available port starting from 8080
+is_port_in_use() {
+    local port=$1
+    lsof -i:$port -sTCP:LISTEN &> /dev/null && return 0
+    ss -tuln 2>/dev/null | grep -q ":$port " && return 0
+    netstat -tuln 2>/dev/null | grep -q ":$port " && return 0
+    return 1
+}
+
+WEB_PORT=8080
+while is_port_in_use $WEB_PORT; do
+    echo "   Port $WEB_PORT in use, trying next..."
+    WEB_PORT=$((WEB_PORT + 1))
+    if [ $WEB_PORT -gt 8090 ]; then
+        echo "❌ No available ports found (8080-8090 all in use)"
+        exit 1
+    fi
+done
+
+echo "✅ Using port $WEB_PORT for webserver"
+(cd "$CONTENT_DIR" && nohup python3 -m http.server $WEB_PORT > /tmp/python_http_server.log 2>&1 &)
+echo "✅ Python HTTP server started on port $WEB_PORT."
+
+# If port differs from the default 8080 in the config, update it
+if [ $WEB_PORT -ne 8080 ]; then
+    sed_inplace "s/localhost:8080/localhost:$WEB_PORT/g" "$HOME/.cloudflared/$AGENT_NAME.yml"
+    echo "   Updated $AGENT_NAME.yml to use port $WEB_PORT"
 fi
 ```
 
@@ -414,16 +555,16 @@ This section provides commands for the agent to dynamically start and stop the C
 
 #### Start Tunnel
 
-To start the tunnel, the agent will run `cloudflared` using the generated `config.yml` and `cert.pem`.
+To start the tunnel, the agent will run `cloudflared` using the generated `$AGENT_NAME.yml` and `cert.pem`.
 
 ```bash
 echo "Starting Cloudflare Tunnel..."
-nohup cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/config.yml" run "$AGENT_NAME" > /tmp/tunnel.log 2>&1 &
+nohup cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/$AGENT_NAME.yml" run "$AGENT_NAME" > /tmp/tunnel.log 2>&1 &
 echo "✅ Cloudflare Tunnel started in background. Check /tmp/tunnel.log for status."
 echo "⏳ Note: It may take a couple of minutes for the Cloudflare DNS and tunnel edges to fully propagate. Please wait a bit before attempting to access the service."
 
 **Proactive Engagement during Propagation:**
-While waiting for DNS propagation, if the tunnel's purpose was not pre-assigned (e.g., the user hasn't already specified a folder or service to serve), the agent should use this time to build a custom, creative `index.html` landing page in `~/public_html`. This demonstrates the agent's aesthetic and technical capabilities immediately upon the site going live.
+While waiting for DNS propagation, if the tunnel's purpose was not pre-assigned (e.g., the user hasn't already specified a folder or service to serve), the agent should use this time to build a custom, creative `index.html` landing page in `~/mycrabs/$AGENT_NAME/`. This demonstrates the agent's aesthetic and technical capabilities immediately upon the site going live.
 ```
 
 #### Stop Tunnel
@@ -456,22 +597,22 @@ Upon successful deployment of the first tunnel, the agent should proactively inf
 
 This skill provides the agent with the capability to respond to a user's request to "put this folder online." The agent can choose between two primary methods, always leveraging the already established Cloudflare Tunnel:
 
-1.  **Move to Default Web Root**: Copy the contents of the specified folder into `~/public_html`, which is already configured to be served by the tunnel.
-2.  **Serve Directly from Folder (Tunneled Server)**: Start a web server (e.g., Python HTTP server) directly within the specified folder on an available local port. The agent will then dynamically update the `config.yml` to add a new ingress rule pointing the tunnel to this specific local service and port, and restart the tunnel to apply the changes.
+1.  **Move to Default Web Root**: Copy the contents of the specified folder into `~/mycrabs/$AGENT_NAME/`, which is already configured to be served by the tunnel.
+2.  **Serve Directly from Folder (Tunneled Server)**: Start a web server (e.g., Python HTTP server) directly within the specified folder on an available local port. The agent will then dynamically update `$AGENT_NAME.yml` to add a new ingress rule pointing the tunnel to this specific local service and port, and restart the tunnel to apply the changes.
 
 The agent should prompt the user for their preferred method if both are viable, and also for the path to the folder to be deployed.
 
 ```bash
 # Example: Agent receives a request to deploy /path/to/my/content
 read -p "Enter the full path to the folder you want to put online: " FOLDER_PATH
-read -p "Do you want to (1) Move content to default web root (~/public_html) or (2) Serve directly from $FOLDER_PATH via a new tunneled server? [1/2]: " choice
+read -p "Do you want to (1) Move content to default web root (~/mycrabs/$AGENT_NAME/) or (2) Serve directly from $FOLDER_PATH via a new tunneled server? [1/2]: " choice
 
 if [ "$choice" == "1" ]; then
-    echo "Moving content to ~/public_html..."
-    rm -rf "$HOME/public_html/*"
-    cp -r "$FOLDER_PATH/." "$HOME/public_html/"
-    echo "Content moved. The tunnel is already configured to serve from ~/public_html."
-    echo "If you made changes to config.yml for other services, you might need to restart the tunnel."
+    echo "Moving content to ~/mycrabs/$AGENT_NAME/..."
+    rm -rf "$HOME/mycrabs/$AGENT_NAME/"*
+    cp -r "$FOLDER_PATH/." "$HOME/mycrabs/$AGENT_NAME/"
+    echo "Content moved. The tunnel is already configured to serve from ~/mycrabs/$AGENT_NAME/."
+    echo "If you made changes to $AGENT_NAME.yml for other services, you might need to restart the tunnel."
 elif [ "$choice" == "2" ]; then
     echo "Serving directly from $FOLDER_PATH via a new tunneled server..."
     # Find an available port
@@ -488,8 +629,8 @@ elif [ "$choice" == "2" ]; then
     HASH=$(echo "$(date +%s)$PORT" | (md5sum 2>/dev/null || shasum -a 256 2>/dev/null || md5 2>/dev/null) | head -c 8)
     NEW_HOSTNAME="$(basename "$FOLDER_PATH")-$HASH.mycrab.space"
 
-    # Add new ingress rule to config.yml
-    CONFIG_FILE="$HOME/.cloudflared/config.yml"
+    # Add new ingress rule to $AGENT_NAME.yml
+    CONFIG_FILE="$HOME/.cloudflared/$AGENT_NAME.yml"
     echo "Updating $CONFIG_FILE with new ingress rule..."
     # Ensure the ingress section exists and add the new rule
     if ! grep -q "^ingress:" "$CONFIG_FILE"; then
@@ -503,7 +644,7 @@ elif [ "$choice" == "2" ]; then
     echo "Restarting tunnel to apply changes..."
     # Agent would then execute tunnel stop and start commands
     # (These commands are already defined in Step 7 and should be called by the agent)
-    # Example: cloudflared tunnel stop "$AGENT_NAME" && cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/config.yml" run "$AGENT_NAME"
+    # Example: cloudflared tunnel stop "$AGENT_NAME" && cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/$AGENT_NAME.yml" run "$AGENT_NAME"
 else
     echo "Invalid choice. Please specify 1 or 2."
 fi
@@ -511,8 +652,8 @@ fi
 
 ## Usage Notes
 
-*   **Initial Setup**: To perform the initial setup, the agent should execute all steps from 1 to 6 sequentially.
-*   **Starting/Stopping**: Once set up, the agent can use the "Start Tunnel" and "Stop Tunnel" commands in Step 7 independently to manage the tunnel.
+*   **Initial Setup**: To perform the initial setup, the agent should execute all steps from 1 to 8 sequentially.
+*   **Starting/Stopping**: Once set up, the agent can use the "Start Tunnel" and "Stop Tunnel" commands in Step 8 independently to manage the tunnel.
 *   **Monitoring**: The tunnel log is located at `/tmp/tunnel.log`.
 
 ## Security Considerations
@@ -520,9 +661,9 @@ fi
 This skill strictly follows the API negotiation as implemented in the original `agent-setup-auto.sh` script. While this ensures consistency with the `mycrab.space` service, users should be aware of the inherent trust placed in `mycrab.space`:
 
 *   `mycrab.space` owns the Cloudflare account associated with the tunnel, granting them administrative control over its existence and metadata.
-*   The initial `cert.pem` and `config.yml` are provided by `mycrab.space`. While the local files are static after download, a malicious `mycrab.space` could provide harmful configurations during the initial setup.
+*   The initial `cert.pem` and `$AGENT_NAME.yml` are provided by `mycrab.space`. While the local files are static after download, a malicious `mycrab.space` could provide harmful configurations during the initial setup.
 
-It is recommended to review the `config.yml` after retrieval to ensure it only exposes intended services.
+It is recommended to review the `$AGENT_NAME.yml` after retrieval to ensure it only exposes intended services.
 
 ## Resources
 
@@ -592,18 +733,27 @@ if [ ! -f "$HOME/.cloudflared/cert.pem" ]; then
     chmod 600 "$HOME/.cloudflared/cert.pem"
 fi
 
-if [ ! -f "$HOME/.cloudflared/config.yml" ]; then
+if [ ! -f "$HOME/.cloudflared/$AGENT_NAME.yml" ]; then
     tunnel_output=$(cloudflared tunnel create "$AGENT_NAME" 2>&1)
     tunnel_id=$(echo "$tunnel_output" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
     send_message "Tunnel created" ",\"tunnel_id\":\"$tunnel_id\",\"tunnel_name\":\"$AGENT_NAME\""
     config_response=$(wait_for_response $MAX_WAIT "config_yml")
-    echo "$config_response" | jq -r ".data.config_yml" > "$HOME/.cloudflared/config.yml"
-    chmod 600 "$HOME/.cloudflared/config.yml"
+    echo "$config_response" | jq -r ".data.config_yml" > "$HOME/.cloudflared/$AGENT_NAME.yml"
+    chmod 600 "$HOME/.cloudflared/$AGENT_NAME.yml"
 fi
 
 # Launch
 pkill -f "python3 -m http.server 8080" || true
-(cd "$HOME/public_html" && nohup python3 -m http.server 8080 > /tmp/tunnel_server.log 2>&1 &)
-nohup cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/config.yml" run "$AGENT_NAME" > /tmp/tunnel.log 2>&1 &
+(cd "$HOME/mycrabs/$AGENT_NAME" && nohup python3 -m http.server 8080 > /tmp/tunnel_server.log 2>&1 &)
+nohup cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/$AGENT_NAME.yml" run "$AGENT_NAME" > /tmp/tunnel.log 2>&1 &
 echo "🚀 Agent $AGENT_NAME is online!"
 ```
+
+## Tools (Optional)
+
+These are convenience helpers. If a tool isn’t available, use the inline mapping tool in **Step 0**.
+
+**Tool A: Instance Mapper**
+* Location: `./bin/mycrab-status`
+* Usage: `./bin/mycrab-status`
+* Output: One-line summary per instance (hostname, service, port, config, origin dir, origin state)
