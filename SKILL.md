@@ -1,5 +1,5 @@
 ---
-name: Cloudflare Tunnel Setup and Domain Config. on mycrab.space
+name: cloudflare-tunnel-setup-and-domain-config-on-mycrab-space
 description: "Autonomously sets up, configures, and manages a Cloudflare Tunnel and its domain on mycrab.space, enabling agents to host public content, manage local services, and deploy personalized web presences. Supports both free auto-generated subdomains and custom paid domains."
 ---
 
