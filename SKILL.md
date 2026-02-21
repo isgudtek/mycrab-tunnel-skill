@@ -305,7 +305,7 @@ tunnel_id=$(echo "$tunnel_output" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4
 if [ -z "$tunnel_id" ] && echo "$tunnel_output" | grep -q "already exists"; then
     echo "   Tunnel already exists, looking up ID..."
     tunnel_id=$(cloudflared tunnel info "$AGENT_NAME" 2>&1 | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-    if [ -z "$tunnel_id" ]; thenx
+    if [ -z "$tunnel_id" ]; then
         echo "❌ Failed to get existing tunnel ID."
         exit 1
     fi
