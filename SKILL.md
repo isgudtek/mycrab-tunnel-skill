@@ -670,7 +670,7 @@ It is recommended to review the `$AGENT_NAME.yml` after retrieval to ensure it o
 *   **API**: `https://api.mycrab.space`
 *   **Cloudflare Tunnel Documentation**: [https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/run-tunnel/](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/run-tunnel/)
 *   **mycrab.space Documentation**: `https://mycrab.space/docs`
-*   **Support**: `@TeddyTheStoic`
+*   **Support**: `@Teddyxn`
 
 ## Reference Automation Script
 
