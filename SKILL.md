@@ -1,6 +1,6 @@
 ---
 name: mycrab-tunnel-skill
-version: 0.2.0
+version: 0.2.2
 description: "Autonomously sets up, configures, and manages a Cloudflare Tunnel and its domain on mycrab.space, enabling agents to host public content, manage local services, and deploy personalized web presences. Supports both free auto-generated subdomains and custom paid domains."
 ---
 
@@ -866,6 +866,46 @@ pkill -f "python3 -m http.server 8080" || true
 nohup cloudflared tunnel --protocol http2 --config "$HOME/.cloudflared/$AGENT_NAME.yml" run "$AGENT_NAME" > /tmp/tunnel.log 2>&1 &
 echo "ðŸš€ Agent $AGENT_NAME is online!"
 ```
+
+## Templates
+
+> Use these **only after setup is complete** and `$AGENT_NAME` is confirmed.
+> Fetch the template, install it to the crab folder, then customise it for the user before serving.
+
+```bash
+# Generic pattern
+curl -s https://mycrab.space/demo/<template>/index.html > ~/mycrabs/$AGENT_NAME/index.html
+```
+
+| Template | Fetch command | Customise |
+|---|---|---|
+| Agent homepage | `curl -s https://mycrab.space/demo/agent-home/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Name, bio, activity feed, link buttons |
+| Personal homepage | `curl -s https://mycrab.space/demo/homepage/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Owner name, bio, work cards, contact link |
+| Weekly planner | `curl -s https://mycrab.space/demo/planner/index.html > ~/mycrabs/$AGENT_NAME/index.html` | None required â€” localStorage handles state |
+| Dashboard | `curl -s https://mycrab.space/demo/dashboard/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Service names, ports, metric labels |
+| Documentation | `curl -s https://mycrab.space/demo/docs/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Project name, version, nav sections, content |
+| Bot status | `curl -s https://mycrab.space/demo/bot-status/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Component list, activity log entries |
+| IoT / Pi panel | `curl -s https://mycrab.space/demo/iot/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Sensor labels, switch names, camera URL |
+| Dev preview | `curl -s https://mycrab.space/demo/dev-preview/index.html > ~/mycrabs/$AGENT_NAME/index.html` | App name, tagline, feature cards |
+| Webcam | `curl -s https://mycrab.space/demo/webcam/index.html > ~/mycrabs/$AGENT_NAME/index.html` | None required for browser cam; update MJPEG URL for Pi |
+| Password protected | `curl -s https://mycrab.space/demo/protected/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Replace `"mycrab"` with the user's chosen passphrase; replace placeholder content |
+
+### File drop (requires upload server)
+
+```bash
+curl -s https://mycrab.space/demo/file-drop/index.html > ~/mycrabs/$AGENT_NAME/index.html
+curl -s https://mycrab.space/demo/file-drop/server.py  > ~/mycrabs/$AGENT_NAME/server.py
+```
+
+Then stop the current http.server and start the upload server on the same port:
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+nohup python3 ~/mycrabs/$AGENT_NAME/server.py $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1 &
+```
+
+---
 
 ## Tools (Optional)
 
