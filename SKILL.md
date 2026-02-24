@@ -1,6 +1,6 @@
 ---
 name: mycrab-tunnel-skill
-version: 0.2.2
+version: 0.2.0
 description: "Autonomously sets up, configures, and manages a Cloudflare Tunnel and its domain on mycrab.space, enabling agents to host public content, manage local services, and deploy personalized web presences. Supports both free auto-generated subdomains and custom paid domains."
 ---
 
@@ -51,6 +51,42 @@ To facilitate smooth collaboration, the agent must recognize and correctly inter
 *   **"Status of MyCrab"**: Provide a diagnostic overview, checking if the `cloudflared` process and local server are active, and echoing the current public URL.
 *   **"Apply paid domain [TOKEN]"**: The agent should set up a custom paid domain using the provided setup token. The token is a long alphanumeric string (e.g., `9AApsQWrSKgxowII-DoeenQGLNpD4Bmfk1kBFxEtVwk`). This triggers the custom domain setup flow. (Refer to **Step 2B: Custom Domain with Token**).
 *   **"List tunnels"** / **"List crabs"**: Run the instance mapper to display all MyCrab instances and their current local origin status. Prefer `./bin/mycrab-status` if available; otherwise use the inline mapping tool in **Step 0**.
+
+### Paid Custom Domain via x402 (SOL)
+
+Agents can autonomously purchase a custom subdomain via **x402** â€” paying SOL
+on-chain with no human Stripe checkout required. The API verifies the transaction
+and issues a setup token immediately.
+
+**Price:** 0.05 SOL to `PEPESwRv3gWQGi2RwhXeQ2TeSZPx7NBdu8eGhFP1SVL`
+
+**Step 1 â€” Check availability**
+```bash
+curl -s -X POST https://api.mycrab.space/check-domain \
+  -H "Content-Type: application/json" \
+  -d '{"subdomain":"YOURNAME"}' | jq .available
+```
+
+**Step 2 â€” Send 0.05 SOL** to `PEPESwRv3gWQGi2RwhXeQ2TeSZPx7NBdu8eGhFP1SVL`
+using `solana transfer` or any Solana wallet. Note the transaction signature.
+
+```bash
+# Example with Solana CLI
+solana transfer PEPESwRv3gWQGi2RwhXeQ2TeSZPx7NBdu8eGhFP1SVL 0.05 --allow-unfunded-recipient
+# â†’ outputs a signature like: 5XkL3mNp...
+```
+
+**Step 3 â€” Submit tx and get setup token**
+```bash
+curl -s -X POST https://api.mycrab.space/verify-sol-payment \
+  -H "Content-Type: application/json" \
+  -d '{"subdomain":"YOURNAME","tx_signature":"YOUR_TX_SIG"}' | jq .
+# â†’ {"success":true,"subdomain":"YOURNAME","setup_token":"...","setup_command":"..."}
+```
+
+Use the returned `setup_token` exactly as in Step 2B (custom domain token flow).
+
+---
 
 ## Helper Functions (Internal to Skill)
 
@@ -882,6 +918,7 @@ curl -s https://mycrab.space/demo/<template>/index.html > ~/mycrabs/$AGENT_NAME/
 | Agent homepage | `curl -s https://mycrab.space/demo/agent-home/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Name, bio, activity feed, link buttons |
 | Personal homepage | `curl -s https://mycrab.space/demo/homepage/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Owner name, bio, work cards, contact link |
 | Weekly planner | `curl -s https://mycrab.space/demo/planner/index.html > ~/mycrabs/$AGENT_NAME/index.html` | None required â€” localStorage handles state |
+| Kanban board | `curl -s https://mycrab.space/demo/kanban/index.html > ~/mycrabs/$AGENT_NAME/index.html` | None required â€” localStorage handles all state; board name and cards editable in-browser |
 | Dashboard | `curl -s https://mycrab.space/demo/dashboard/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Service names, ports, metric labels |
 | Documentation | `curl -s https://mycrab.space/demo/docs/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Project name, version, nav sections, content |
 | Bot status | `curl -s https://mycrab.space/demo/bot-status/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Component list, activity log entries |
@@ -889,6 +926,18 @@ curl -s https://mycrab.space/demo/<template>/index.html > ~/mycrabs/$AGENT_NAME/
 | Dev preview | `curl -s https://mycrab.space/demo/dev-preview/index.html > ~/mycrabs/$AGENT_NAME/index.html` | App name, tagline, feature cards |
 | Webcam | `curl -s https://mycrab.space/demo/webcam/index.html > ~/mycrabs/$AGENT_NAME/index.html` | None required for browser cam; update MJPEG URL for Pi |
 | Password protected | `curl -s https://mycrab.space/demo/protected/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Replace `"mycrab"` with the user's chosen passphrase; replace placeholder content |
+| Webchat | see below | None required â€” P2P video via built-in WebSocket signaling |
+| Wetty terminal | see below | None â€” SSH login is the only auth |
+| code-server | see below | `--auth none` flag; tunnel URL is the only gate |
+| filebrowser | see below | `--noauth` flag; tunnel URL is the only gate |
+| Uptime Kuma | see below | Add monitors via the dashboard after setup |
+| ntfy | see below | Agents publish via `curl -d "msg" $URL/<topic>` |
+| Memos | see below | Data stored in `~/mycrabs/$AGENT_NAME/memos-data` |
+| Scribble.rs | see below | Share the mycrab URL with friends to start a room |
+| OliveTin | see below | Edit `config.yaml` to add custom action buttons |
+| Screego | see below | Needs TURN/STUN for cross-NAT; same-network works fine |
+| MiroTalk P2P | see below | No accounts needed for guests; share the room URL |
+| x402 Payment Gate | see below | Gate any endpoint behind a SOL micropayment |
 
 ### File drop (requires upload server)
 
@@ -903,6 +952,282 @@ Then stop the current http.server and start the upload server on the same port:
 PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
 pkill -f "http.server $PORT" 2>/dev/null || true
 nohup python3 ~/mycrabs/$AGENT_NAME/server.py $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1 &
+```
+
+### Webchat (requires signaling server)
+
+```bash
+curl -s https://mycrab.space/webchat/index.html > ~/mycrabs/$AGENT_NAME/index.html
+curl -s https://mycrab.space/webchat/server.py  > ~/mycrabs/$AGENT_NAME/server.py
+```
+
+Then stop the current http.server and start the webchat server on the same port:
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+nohup python3 ~/mycrabs/$AGENT_NAME/server.py $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1 &
+```
+
+The webchat server handles both HTTP (serves `index.html`) and WebSocket signaling (`/ws/<room-id>`) on the same port. Share the URL â€” anyone who opens it gets a unique room; send them the link shown on screen to start a 1-on-1 video call.
+
+### Wetty (browser terminal â€” requires Node.js)
+
+Wetty serves a full terminal in the browser, proxied through the machine's sshd.
+No separate auth needed â€” the SSH login prompt handles credentials.
+
+Install Wetty globally (Node.js â‰¥ 14 required):
+
+```bash
+npm install -g wetty
+```
+
+Stop the current server and start Wetty on the tunnel's port:
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+pkill -f "wetty.*$PORT" 2>/dev/null || true
+tmux new-session -d -s wetty-$AGENT_NAME \
+  "wetty --port $PORT --ssh-host localhost --ssh-port 22 --base / \
+   > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` now shows a browser terminal.
+Users log in with the machine's SSH username + password.
+No additional authentication layer is required.
+
+**If the machine has `PasswordAuthentication no` in sshd** (key-only SSH), generate a
+dedicated keypair and add it to the target user's `authorized_keys` so Wetty can
+auto-connect without a browser password prompt:
+
+```bash
+SSH_USER=bongo   # the user whose shell to expose
+ssh-keygen -t ed25519 -f /root/.ssh/wetty_key -N "" -C "wetty-auto-login"
+cat /root/.ssh/wetty_key.pub >> /home/$SSH_USER/.ssh/authorized_keys
+
+tmux new-session -d -s wetty-$AGENT_NAME \
+  "wetty --port $PORT --ssh-host localhost --ssh-port 22 \
+         --ssh-user $SSH_USER --ssh-key /root/.ssh/wetty_key --base / \
+   > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+> **Warning**: `--ssh-key` enables password-less auto-login. Anyone who reaches the
+> URL gets a shell as `$SSH_USER`. The tunnel URL is the only gate â€” keep it private.
+
+### code-server (VS Code in browser)
+
+Install `code-server` globally via npm, then start it on the tunnel's port with auth disabled
+(the Cloudflare tunnel URL is the only gate):
+
+```bash
+npm install -g code-server
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "code-server.*$PORT" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s code-$AGENT_NAME \
+  "code-server --bind-addr 0.0.0.0:$PORT --auth none > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` now serves a full VS Code IDE.
+`--auth none` skips code-server's built-in password â€” the tunnel URL is the only gate.
+
+### filebrowser (web file manager)
+
+Download and install the filebrowser binary, then start it on the tunnel's port:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "filebrowser.*$PORT" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s fb-$AGENT_NAME \
+  "filebrowser -p $PORT -r / -a 0.0.0.0 --noauth > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` now serves the full filesystem as a web file manager.
+`--noauth` removes filebrowser's own login â€” tunnel URL is the only gate.
+
+### Uptime Kuma (uptime monitor)
+
+Clone the repo, install deps, then start on the tunnel's port:
+
+```bash
+git clone https://github.com/louislam/uptime-kuma.git /tmp/uptime-kuma
+cd /tmp/uptime-kuma && npm run setup
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s uk-$AGENT_NAME \
+  "PORT=$PORT node /tmp/uptime-kuma/server/server.js > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` shows the Uptime Kuma dashboard.
+Add monitors via the dashboard UI after setup.
+
+### ntfy (push notifications via HTTP)
+
+Download the ntfy binary and start the server:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sL "https://github.com/binwiederhier/ntfy/releases/latest/download/ntfy_linux_${ARCH}.tar.gz" \
+  | tar -xz -C /usr/local/bin --strip-components=1 ntfy_linux_${ARCH}/ntfy
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "ntfy.*$PORT" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s ntfy-$AGENT_NAME \
+  "ntfy serve --listen-http :$PORT > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+Agents (or cron jobs) can publish notifications:
+```bash
+curl -d "Build done" https://$AGENT_NAME.mycrab.space/my-topic
+```
+
+Subscribe in the ntfy mobile app or browser to `https://$AGENT_NAME.mycrab.space/my-topic`.
+
+### Memos (personal micro-notes)
+
+Download the memos binary and start it:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sL "https://github.com/usememos/memos/releases/latest/download/memos-linux-${ARCH}" \
+  -o /usr/local/bin/memos && chmod +x /usr/local/bin/memos
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+mkdir -p ~/mycrabs/$AGENT_NAME/memos-data
+tmux new-session -d -s memos-$AGENT_NAME \
+  "memos --port $PORT --data ~/mycrabs/$AGENT_NAME/memos-data > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` serves the Memos note-taking UI.
+Data is persisted in `~/mycrabs/$AGENT_NAME/memos-data`.
+
+### Scribble.rs (browser Pictionary)
+
+Download the Scribble.rs binary and start it:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sL "https://github.com/scribble-rs/scribble.rs/releases/latest/download/scribble.rs-linux-${ARCH}.tar.gz" \
+  | tar -xz -C /usr/local/bin
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s scribble-$AGENT_NAME \
+  "scribble.rs --port $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+Share `https://$AGENT_NAME.mycrab.space` with friends â€” anyone with the URL can join and play.
+
+### OliveTin (shell commands as browser buttons)
+
+Download OliveTin, create a config with useful actions, then start it:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sL "https://github.com/OliveTin/OliveTin/releases/latest/download/OliveTin-linux-${ARCH}" \
+  -o /usr/local/bin/OliveTin && chmod +x /usr/local/bin/OliveTin
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+mkdir -p ~/mycrabs/$AGENT_NAME/olivetin
+cat > ~/mycrabs/$AGENT_NAME/olivetin/config.yaml << 'EOF'
+listenAddressSingleHTTPFrontend: 0.0.0.0:PORT_PLACEHOLDER
+actions:
+  - title: Check disk space
+    shell: df -h
+  - title: Show uptime
+    shell: uptime
+  - title: List processes
+    shell: ps aux | head -20
+  - title: Free memory
+    shell: free -h
+  - title: Git pull
+    shell: git pull origin main
+EOF
+sed -i "s/PORT_PLACEHOLDER/$PORT/" ~/mycrabs/$AGENT_NAME/olivetin/config.yaml
+pkill -f "OliveTin" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s olivetin-$AGENT_NAME \
+  "OliveTin --configdir ~/mycrabs/$AGENT_NAME/olivetin > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+Edit `~/mycrabs/$AGENT_NAME/olivetin/config.yaml` to add or customise action buttons.
+Each action runs a shell command on the server when clicked in the browser.
+
+### Screego (screen sharing via URL)
+
+Download Screego and start it on the tunnel's port:
+
+```bash
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -sL "https://github.com/screego/server/releases/latest/download/screego_linux_${ARCH}.tar.gz" \
+  | tar -xz -C /usr/local/bin screego
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "screego" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s screego-$AGENT_NAME \
+  "screego serve --server-port $PORT --app-host $AGENT_NAME.mycrab.space \
+   > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+Open `https://$AGENT_NAME.mycrab.space`, create a room, and share the URL.
+Viewers watch in their browser â€” no install required on their end.
+
+> **Note**: Screego uses WebRTC for peer-to-peer video. Works reliably on the same
+> network. Cross-NAT peers may need a TURN server configured via `--turn-*` flags.
+
+### MiroTalk P2P (self-hosted Zoom alternative)
+
+Clone the repo, copy the config templates, install deps, then start on the tunnel's port:
+
+```bash
+git clone https://github.com/miroslavpejic85/mirotalk.git /tmp/mirotalk
+cd /tmp/mirotalk
+cp .env.template .env
+cp app/src/config.template.js app/src/config.js
+npm install
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+# Update the port in .env
+sed -i "s/^PORT=.*/PORT=$PORT/" .env
+tmux new-session -d -s mirotalk-$AGENT_NAME \
+  "cd /tmp/mirotalk && npm start > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+`https://$AGENT_NAME.mycrab.space` serves the MiroTalk meeting room.
+Guests open the URL and join instantly â€” no account or install required on their end.
+Supports video, audio, screen sharing, whiteboard, and recording.
+
+---
+
+### x402 Payment Gate
+
+Gate your crab URL behind a Solana micropayment â€” visitors pay SOL, the server verifies
+the transaction on-chain, then serves your content. No pip deps required (pure stdlib).
+
+```bash
+curl -s https://mycrab.space/x402-gate.py -o ~/x402-gate.py
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "x402-gate" 2>/dev/null || true
+pkill -f "http.server $PORT" 2>/dev/null || true
+tmux new-session -d -s x402-$AGENT_NAME \
+  "SOL_WALLET=PEPESwRv3gWQGi2RwhXeQ2TeSZPx7NBdu8eGhFP1SVL PRICE_SOL=0.001 \
+   CONTENT=~/mycrabs/$AGENT_NAME \
+   python3 ~/x402-gate.py $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1"
+```
+
+After payment the visitor retries the request with the header `X-Payment-Tx: <tx-signature>`.
+The gate verifies the signature via Solana mainnet RPC and serves the content on success.
+
+**Customise:**
+- `SOL_WALLET=<addr>` â€” your Solana wallet (default shown is mycrab.space)
+- `PRICE_SOL=0.001` â€” amount in SOL (0.001 â‰ˆ $0.002)
+- `CONTENT=<path>` â€” file or directory to serve once paid (default: `index.html`)
+- `RPC=https://api.devnet.solana.com` â€” switch to devnet for testing (set `PRICE_SOL=0` to skip check)
+
+**Verify gate is running:**
+```bash
+curl -s https://$AGENT_NAME.mycrab.space | jq .x402Version  # should print 1
 ```
 
 ---
