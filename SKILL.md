@@ -938,6 +938,79 @@ curl -s https://mycrab.space/demo/<template>/index.html > ~/mycrabs/$AGENT_NAME/
 | Screego | see below | Needs TURN/STUN for cross-NAT; same-network works fine |
 | MiroTalk P2P | see below | No accounts needed for guests; share the room URL |
 | x402 Payment Gate | see below | Gate any endpoint behind a SOL micropayment |
+| sol-pay | Solana Phantom payment page | curl + customize CONFIG block |
+| PHP/MySQL env | see below | Nginx + PHP-FPM + MariaDB blank stack |
+| InvoicePlane | see below | Invoices, clients, payments â€” self-hosted |
+| Sensor Hub | `curl -s https://mycrab.space/demo/sensor-hub/index.html > ~/mycrabs/$AGENT_NAME/index.html` | Edit CONFIG: `endpoint`, `ws_url`, `stream_fps`, `post_interval`, `auto_enable` |
+
+---
+
+## Apps
+
+Apps install a real background service and expose it via your crab URL.
+Unlike templates (static HTML), apps run a process and output a port.
+
+### How an agent installs an app
+
+1. Run the app's install script:
+   ```bash
+   curl -s https://mycrab.space/demo/<name>/<name>.sh | bash
+   ```
+2. Read the `PORT=<n>` it prints
+3. Point the crab at that port using mycrab-manage.sh:
+   ```bash
+   bash <(curl -s https://mycrab.space/mycrab-manage.sh) $AGENT_NAME port <n>
+   ```
+
+### Available apps
+
+| App | Script | What it does |
+|---|---|---|
+| Desktop Share | `demo/desktop-share/desktop-share.sh` | Share your screen via any browser (noVNC) |
+
+### App script convention
+
+Every app script:
+- Runs as normal user â€” no `sudo bash`, just `curl ... | bash`
+- Uses inline `sudo` only where strictly required (e.g. enabling system services)
+- Starts its service in the background
+- Prints `PORT=<n>` as the last line of output
+- Writes state to `~/.mycrab-<appname>/state` for restarts
+
+---
+
+### Sensor Hub (agent sensorial endpoint)
+
+Open on a phone â€” toggle camera, mic, GPS, motion, and orientation independently.
+Battery and network are read automatically. Streams JSON payloads to a REST endpoint
+and/or WebSocket in real time.
+
+```bash
+curl -s https://mycrab.space/demo/sensor-hub/index.html > ~/mycrabs/$AGENT_NAME/index.html
+```
+
+Edit the `CONFIG` block at the top of `<script>`:
+- `endpoint` â€” URL to POST JSON snapshots to (leave `""` to disable)
+- `ws_url`   â€” WebSocket URL for real-time frame streaming (leave `""` to disable)
+- `stream_fps` â€” camera frames per second sent over WebSocket (default `1`)
+- `post_interval` â€” ms between REST POSTs (default `5000`)
+- `auto_enable` â€” sensors to start on load, e.g. `["camera","mic","gps","motion"]`
+
+Payload shape:
+```json
+{
+  "ts": 1234567890,
+  "sensors": {
+    "camera":      { "frame": "data:image/jpeg;base64,..." },
+    "mic":         { "level": 0.45, "db": -12 },
+    "gps":         { "lat": 51.5, "lng": -0.1, "accuracy": 10, "speed": null },
+    "motion":      { "x": 0.1, "y": 9.8, "z": 0.2 },
+    "orientation": { "alpha": 45, "beta": 10, "gamma": 5 },
+    "battery":     { "level": 0.85, "charging": true },
+    "network":     { "type": "4g", "downlink": 50 }
+  }
+}
+```
 
 ### File drop (requires upload server)
 
@@ -953,6 +1026,128 @@ PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0
 pkill -f "http.server $PORT" 2>/dev/null || true
 nohup python3 ~/mycrabs/$AGENT_NAME/server.py $PORT > /tmp/webserver-$AGENT_NAME.log 2>&1 &
 ```
+
+### PHP/MySQL environment (blank stack)
+
+Installs Nginx + PHP-FPM + MariaDB and leaves the web root empty for any PHP app.
+Credentials are saved to `~/.mycrab-php-env` for easy reference.
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+TUNNEL_URL=$(grep 'hostname:' ~/.cloudflared/$AGENT_NAME.yml | awk '{print $2}')
+DIR=~/mycrabs/$AGENT_NAME
+DB_NAME=$(echo $AGENT_NAME | tr '-' '_')
+DB_PASS=$(openssl rand -hex 12)
+
+# 1 â€” Install stack (Debian/Ubuntu)
+apt-get install -y nginx php8.1-fpm php8.1-mysql php8.1-mbstring php8.1-curl php8.1-gd php8.1-zip php8.1-xml php8.1-intl unzip mariadb-server 2>/dev/null
+
+# 2 â€” Start DB and create database + user
+service mariadb start 2>/dev/null || systemctl start mariadb
+mysql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`; \
+  CREATE USER IF NOT EXISTS '$DB_NAME'@'localhost' IDENTIFIED BY '$DB_PASS'; \
+  GRANT ALL ON \`$DB_NAME\`.* TO '$DB_NAME'@'localhost'; FLUSH PRIVILEGES;"
+
+# 3 â€” Web root + welcome page
+mkdir -p $DIR
+cat > $DIR/index.php << 'PHP'
+<?php
+$db = new mysqli('localhost', getenv('DB_USER'), getenv('DB_PASS'), getenv('DB_NAME'));
+$status = $db->connect_error ? 'âœ— ' . $db->connect_error : 'âœ“ connected';
+echo "<pre>PHP " . PHP_VERSION . "\nMySQL: $status\nWeb root: " . __DIR__ . "\n</pre>";
+PHP
+
+# 4 â€” Save credentials
+cat > ~/.mycrab-php-env << ENV
+TUNNEL_URL=https://$TUNNEL_URL
+WEB_ROOT=$DIR
+DB_HOST=localhost
+DB_NAME=$DB_NAME
+DB_USER=$DB_NAME
+DB_PASS=$DB_PASS
+ENV
+chmod 600 ~/.mycrab-php-env
+
+# 5 â€” Nginx vhost on tunnel port
+cat > /etc/nginx/sites-available/$AGENT_NAME << NGINX
+server {
+    listen $PORT;
+    root $DIR;
+    index index.php index.html;
+    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param DB_USER $DB_NAME;
+        fastcgi_param DB_PASS $DB_PASS;
+        fastcgi_param DB_NAME $DB_NAME;
+    }
+    location ~ /\.ht { deny all; }
+}
+NGINX
+ln -sf /etc/nginx/sites-available/$AGENT_NAME /etc/nginx/sites-enabled/$AGENT_NAME
+rm -f /etc/nginx/sites-enabled/default
+service php8.1-fpm start && service nginx restart
+echo "PHP/MySQL ready â†’ https://$TUNNEL_URL"
+echo "Credentials saved to ~/.mycrab-php-env"
+```
+
+Deploy any PHP app by copying files into `$DIR`. DB credentials are in `~/.mycrab-php-env`.
+
+### InvoicePlane (self-hosted invoicing)
+
+Installs Nginx + PHP-FPM + MariaDB. Run this one block â€” the agent handles everything:
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+TUNNEL_URL=$(grep 'hostname:' ~/.cloudflared/$AGENT_NAME.yml | awk '{print $2}')
+DIR=~/mycrabs/$AGENT_NAME
+
+# 1 â€” Install Nginx + PHP-FPM + MariaDB (Debian/Ubuntu)
+apt-get install -y nginx php8.1-fpm php8.1-mysql php8.1-mbstring php8.1-curl php8.1-gd php8.1-zip php8.1-xml unzip mariadb-server 2>/dev/null
+
+# 2 â€” Start DB and create schema
+service mariadb start 2>/dev/null || systemctl start mariadb
+mysql -e "CREATE DATABASE IF NOT EXISTS invoiceplane; \
+  CREATE USER IF NOT EXISTS 'ip'@'localhost' IDENTIFIED BY 'ippass123'; \
+  GRANT ALL ON invoiceplane.* TO 'ip'@'localhost'; FLUSH PRIVILEGES;"
+
+# 3 â€” Download InvoicePlane v1.7.1
+mkdir -p $DIR && cd $DIR
+curl -sL https://github.com/InvoicePlane/InvoicePlane/releases/download/v1.7.1/InvoicePlane-v1.7.1.zip -o ip.zip
+unzip -q ip.zip && rm ip.zip
+cp htaccess .htaccess
+
+# 4 â€” Configure
+cp ipconfig.php.example ipconfig.php
+printf "\nIP_URL=https://$TUNNEL_URL\nDB_HOSTNAME=localhost\nDB_USERNAME=ip\nDB_PASSWORD=ippass123\nDB_DATABASE=invoiceplane\nDB_PORT=3306\n" >> ipconfig.php
+
+# 5 â€” Nginx vhost on tunnel port
+cat > /etc/nginx/sites-available/invoiceplane << NGINX
+server {
+    listen $PORT;
+    root $DIR;
+    index index.php;
+    location / { try_files \$uri \$uri/ /index.php?\$query_string; }
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+    location ~ /\.ht { deny all; }
+}
+NGINX
+ln -sf /etc/nginx/sites-available/invoiceplane /etc/nginx/sites-enabled/invoiceplane
+rm -f /etc/nginx/sites-enabled/default
+service php8.1-fpm start && service nginx restart
+echo "InvoicePlane running â†’ https://$TUNNEL_URL/index.php/setup"
+```
+
+Open `https://$TUNNEL_URL/index.php/setup` to run the setup wizard (creates tables, sets admin password).
+After setup, remove or restrict `/index.php/setup` access.
 
 ### Webchat (requires signaling server)
 
@@ -1229,6 +1424,44 @@ The gate verifies the signature via Solana mainnet RPC and serves the content on
 ```bash
 curl -s https://$AGENT_NAME.mycrab.space | jq .x402Version  # should print 1
 ```
+
+---
+
+### sol-pay â€” Solana Phantom Payment Page
+
+Accept SOL payments directly from any Phantom wallet â€” no backend required.
+The page builds and signs a real SOL transfer transaction in the browser.
+
+```bash
+curl -s https://mycrab.space/demo/sol-pay/index.html > ~/mycrabs/$AGENT_NAME/index.html
+```
+
+Then serve it (standard `http.server` is fine â€” no server-side logic needed):
+
+```bash
+PORT=$(grep -oE 'localhost:[0-9]+' ~/.cloudflared/$AGENT_NAME.yml | grep -oE '[0-9]+$')
+pkill -f "http.server $PORT" 2>/dev/null || true
+nohup python3 -m http.server $PORT --directory ~/mycrabs/$AGENT_NAME \
+  > /tmp/webserver-$AGENT_NAME.log 2>&1 &
+```
+
+**Customise** (edit the `CONFIG` block at the top of `<script>` in `index.html`):
+- `wallet` â€” your Solana receiving address (base58, required)
+- `price_sol` â€” amount in SOL (e.g. `0.05`)
+- `title` / `description` â€” what you're selling
+- `image` â€” URL to product image (or `data:` URI; leave `""` for no image)
+- `success_msg` â€” message shown after payment
+- `success_url` â€” optional redirect URL after payment (leave `""` to stay on page)
+
+**What it does:**
+- Shows product image, title, description, and price badge
+- Detects Phantom; if not installed shows "Install Phantom â†’" link
+- "Connect Phantom" button calls `window.solana.connect()`
+- After connect shows truncated wallet address + "Pay X SOL" button
+- Builds a `SystemProgram.transfer` tx via `@solana/web3.js` (CDN â€” no npm install)
+- Signs + sends via `signAndSendTransaction`, waits for `confirmed` status
+- On success shows green confirmation box with copyable tx signature
+- Optionally redirects to `success_url` after 2.5 s
 
 ---
 
