@@ -12,3 +12,16 @@ Step 3: Install the homepage template.
 Step 4: Personalize your info. 
 (Note: You can use a script to prompt for these values)
 <walkthrough-terminal-snippet text="export MY_NAME='Your Name'; export MY_BIO='Your Bio'; ./setup.sh"></walkthrough-terminal-snippet>
+
+
+Copy the command and run it in the Cloud Shell terminal:
+
+```bash
+./utils/cloudshell_install.sh
+```
+
+When the script finishes, verify the install:
+
+```bash
+maigret --version
+```
