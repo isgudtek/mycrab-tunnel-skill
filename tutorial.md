@@ -1,6 +1,6 @@
 # My Crab Agent Setup — test instructions for GCS
 
-![MyCrab Logo](https://mycrab.space/mycrab-logo-tx.webp)
+![MyCrab Logo](https://mycrab.space/favicon.png)
 
 ---
 
