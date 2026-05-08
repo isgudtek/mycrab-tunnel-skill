@@ -1,5 +1,10 @@
 ## My Crab Demo Setup — test instructions
 
+
+One agent. One sentence. Your app is live.
+
+Be part of our early testers: Test it, give us feedback, we’ll remember you.
+
 ---
 
 ### Step 1: Open Gemini
