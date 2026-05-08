@@ -51,5 +51,12 @@ Read the skill at https://githubusercontent.com, then install the blog skill to 
 
 ## Next Steps
 
-* 👉 [Give your tester feedback](https://mycrab.space)
-* 👉 [Explore the apps](https://mycrab.space)
+* 👉 [Give your tester feedback](https://taskai.mycrab.space/testers/)
+* 👉 [Explore the apps (and if you like it, go have fun in the lab)](https://mycrab.space/apps.html)
+
+
+
+
+
+
+
