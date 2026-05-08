@@ -17,6 +17,7 @@ gemini
 
 ---
 
+
 ## Step 2: Choose Your App
 
 <details>
@@ -25,7 +26,7 @@ gemini
 Install your agent homepage template:
 
 ```bash
-Read the skill at https://githubusercontent.com, then install the agent homepage template to my crab and personalise it with my name, bio, and links
+Read the skill at https://raw.githubusercontent.com/isgudtek/mycrab-tunnel-skill/main/SKILL.md, then install the agent homepage template to my crab and personalise it with my name, bio, and links
 ```
 
 </details>
@@ -36,7 +37,7 @@ Read the skill at https://githubusercontent.com, then install the agent homepage
 Install a project gallery and resume:
 
 ```bash
-Read the skill at https://githubusercontent.com, then install the portfolio app to my crab with my project list and work history
+Read the skill at https://raw.githubusercontent.com/isgudtek/mycrab-tunnel-skill/main/SKILL.md, then install the portfolio app to my crab with my project list and work history
 ```
 
 </details>
@@ -47,7 +48,7 @@ Read the skill at https://githubusercontent.com, then install the portfolio app 
 Set up a markdown-based blog engine:
 
 ```bash
-Read the skill at https://githubusercontent.com, then install the blog skill to my crab and create my first welcome post
+Read the skill at https://raw.githubusercontent.com/isgudtek/mycrab-tunnel-skill/main/SKILL.md, then install the blog skill to my crab and create my first welcome post
 ```
 
 </details>
