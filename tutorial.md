@@ -9,11 +9,13 @@ Be part of our early testers: Test it, give us feedback, we’ll remember you.
 
 ### Step 1: Open Gemini
 
-Open Gemini in the terminal to start the session:
+Open Gemini in the terminal to start the agent in this shell:
 
 ```bash
 gemini
 ```
+Alternetively, you can you install/use any other agent in this shell, or on your own device, which is the normal use.
+
 
 ---
 
